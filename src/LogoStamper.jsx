@@ -126,10 +126,32 @@ export default function LogoStamper() {
   var [snap, setSnap] = useState("br");
   var [format, setFormat] = useState("png");
   var [jpegQuality, setJpegQuality] = useState(95);
-
+  var [presets, setPresets] = useState([]);
+  var [presetLoading, setPresetLoading] = useState(true);
   var [logoPos, setLogoPos] = useState({ x: 0, y: 0 });
   var [dragging, setDragging] = useState(false);
   var [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  useEffect(function () {
+    fetch(import.meta.env.BASE_URL + 'logos/manifest.json')
+      .then(function (r) { return r.json() })
+      .then(function (data) { setPresets(data || []) })
+      .catch(function () { setPresets([]) })
+      .finally(function () { setPresetLoading(false) })
+  }, []);
+
+  function handlePresetClick(preset) {
+    var url = import.meta.env.BASE_URL + 'logos/' + preset.file;
+    var img = new Image();
+    img.onload = function () {
+      logoImgRef.current = img;
+      setLogoImage(url);
+      setLogoPreview(url);
+    };
+    img.onerror = function () {
+      console.log('Failed to load preset: ' + preset.file);
+    };
+    img.src = url;
+  }
 
   var canvasRef = useRef(null);
   var previewRef = useRef(null);
@@ -376,6 +398,57 @@ export default function LogoStamper() {
               preview={logoPreview}
             />
           </div>
+
+          {/* Preset Logos */}
+          {!presetLoading && presets.length > 0 && (
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Preset Logos</div>
+              <div style={{
+                display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6,
+                maxHeight: 240, overflowY: "auto",
+              }}>
+                {presets.map(function (p, i) {
+                  var isActive = logoImage === (import.meta.env.BASE_URL + 'logos/' + p.file);
+                  return (
+                    <div
+                      key={p.file + '-' + i}
+                      onClick={function () { handlePresetClick(p) }}
+                      title={p.name}
+                      style={{
+                        border: isActive ? "2px solid #6366f1" : "2px solid #e5e7eb",
+                        borderRadius: 8,
+                        padding: 6,
+                        cursor: "pointer",
+                        background: isActive ? "#eef2ff" : "#fff",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 4,
+                        transition: "all 0.12s ease",
+                      }}
+                    >
+                      <img
+                        src={import.meta.env.BASE_URL + 'logos/' + p.file}
+                        alt={p.name}
+                        style={{
+                          width: 56, height: 56, objectFit: "contain",
+                          background: "repeating-conic-gradient(#f3f3f2 0% 25%, #fff 0% 50%) 50% / 12px 12px",
+                          borderRadius: 4,
+                        }}
+                      />
+                      <span style={{
+                        fontSize: 9, fontWeight: 600, color: isActive ? "#4338ca" : "#9ca3af",
+                        textAlign: "center", lineHeight: 1.2,
+                        overflow: "hidden", textOverflow: "ellipsis",
+                        display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+                        width: "100%",
+                      }}>{p.name}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {ready && (
             <>
