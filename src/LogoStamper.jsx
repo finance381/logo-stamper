@@ -2,10 +2,14 @@ import { useState, useRef, useEffect, useCallback } from "react";
 
 var SNAP_POSITIONS = [
   { label: "Top Left", key: "tl" },
+  { label: "Top Centre", key: "tc" },
   { label: "Top Right", key: "tr" },
+  { label: "Middle Left", key: "ml" },
+  { label: "Middle Centre", key: "mc" },
+  { label: "Middle Right", key: "mr" },
   { label: "Bottom Left", key: "bl" },
+  { label: "Bottom Centre", key: "bc" },
   { label: "Bottom Right", key: "br" },
-  { label: "Center", key: "c" },
 ];
 
 var FORMAT_OPTIONS = [
@@ -195,12 +199,20 @@ export default function LogoStamper() {
     if (!baseDims) return { x: 0, y: 0 };
     var logo = getLogoDisplaySize();
     var pad = padding;
+    var cx = (baseDims.w - logo.w) / 2;
+    var cy = (baseDims.h - logo.h) / 2;
+    var right = baseDims.w - logo.w - pad;
+    var bottom = baseDims.h - logo.h - pad;
     switch (snapKey) {
       case "tl": return { x: pad, y: pad };
-      case "tr": return { x: baseDims.w - logo.w - pad, y: pad };
-      case "bl": return { x: pad, y: baseDims.h - logo.h - pad };
-      case "br": return { x: baseDims.w - logo.w - pad, y: baseDims.h - logo.h - pad };
-      case "c": return { x: (baseDims.w - logo.w) / 2, y: (baseDims.h - logo.h) / 2 };
+      case "tc": return { x: cx, y: pad };
+      case "tr": return { x: right, y: pad };
+      case "ml": return { x: pad, y: cy };
+      case "mc": return { x: cx, y: cy };
+      case "mr": return { x: right, y: cy };
+      case "bl": return { x: pad, y: bottom };
+      case "bc": return { x: cx, y: bottom };
+      case "br": return { x: right, y: bottom };
       default: return { x: pad, y: pad };
     }
   }, [baseDims, getLogoDisplaySize, padding]);
