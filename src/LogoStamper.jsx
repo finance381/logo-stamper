@@ -198,69 +198,6 @@ export default function LogoStamper() {
     handleBaseFile(arr[0]);
   }
 
-  function handleBatchExport() {
-    if (!logoImgRef.current || batchFiles.length === 0) return;
-    setBatchProcessing(true);
-    setBatchProgress(0);
-
-    var zip = new JSZip();
-    var logo = getLogoDisplaySize();
-    var processed = 0;
-    var total = batchFiles.length;
-    var mime = format === "png" ? "image/png" : "image/jpeg";
-    var quality = format === "jpeg" ? jpegQuality / 100 : undefined;
-    var ext = format === "png" ? ".png" : ".jpg";
-
-    function processNext(index) {
-      if (index >= total) {
-        zip.generateAsync({ type: "blob" }).then(function (blob) {
-          var link = document.createElement("a");
-          link.href = URL.createObjectURL(blob);
-          link.download = "logo-stamped-" + Date.now() + ".zip";
-          link.click();
-          URL.revokeObjectURL(link.href);
-          setBatchProcessing(false);
-          setBatchProgress(0);
-        });
-        return;
-      }
-
-      var file = batchFiles[index];
-      var img = new Image();
-      img.onload = function () {
-        var offscreen = document.createElement("canvas");
-        offscreen.width = img.naturalWidth;
-        offscreen.height = img.naturalHeight;
-        var ctx = offscreen.getContext("2d");
-        ctx.drawImage(img, 0, 0);
-
-        // Recalculate logo size relative to THIS image's width
-        var targetW = img.naturalWidth * (scale / 100);
-        var ratio = targetW / logoImgRef.current.naturalWidth;
-        var lw = Math.round(targetW);
-        var lh = Math.round(logoImgRef.current.naturalHeight * ratio);
-
-        // Recalculate position for this image's dimensions
-        var pos = computeSnapForDims(img.naturalWidth, img.naturalHeight, lw, lh);
-
-        ctx.globalAlpha = opacity / 100;
-        ctx.drawImage(logoImgRef.current, pos.x, pos.y, lw, lh);
-        ctx.globalAlpha = 1;
-
-        offscreen.toBlob(function (blob) {
-          var name = file.name.replace(/\.[^.]+$/, "") + "_logo" + ext;
-          zip.file(name, blob);
-          processed = processed + 1;
-          setBatchProgress(Math.round((processed / total) * 100));
-          processNext(index + 1);
-        }, mime, quality);
-      };
-      img.src = URL.createObjectURL(file);
-    }
-
-    processNext(0);
-  }
-
   function computeSnapForDims(imgW, imgH, logoW, logoH) {
     var pad = padding;
     var cx = (imgW - logoW) / 2;
@@ -280,6 +217,122 @@ export default function LogoStamper() {
       case "br": return { x: right, y: bottom };
       default: return { x: right, y: bottom };
     }
+  }
+
+  function handleBatchExport() {
+    if (!logoImgRef.current || batchFiles.length === 0) return;
+    setBatchProcessing(true);
+    setBatchProgress(0);
+
+    var total = batchFiles.length;
+    var processed = 0;
+    var mime = format === "png" ? "image/png" : "image/jpeg";
+    var quality = format === "jpeg" ? jpegQuality / 100 : undefined;
+    var ext = format === "png" ? ".png" : ".jpg";
+    var concurrency = 2;
+    var chunkSize = 20;
+
+    function processOne(file) {
+      return new Promise(function (resolve) {
+        var img = new Image();
+        img.onload = function () {
+          var offscreen = document.createElement("canvas");
+          offscreen.width = img.naturalWidth;
+          offscreen.height = img.naturalHeight;
+          var ctx = offscreen.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+
+          var targetW = img.naturalWidth * (scale / 100);
+          var ratio = targetW / logoImgRef.current.naturalWidth;
+          var lw = Math.round(targetW);
+          var lh = Math.round(logoImgRef.current.naturalHeight * ratio);
+          var pos = computeSnapForDims(img.naturalWidth, img.naturalHeight, lw, lh);
+
+          ctx.globalAlpha = opacity / 100;
+          ctx.drawImage(logoImgRef.current, pos.x, pos.y, lw, lh);
+          ctx.globalAlpha = 1;
+
+          offscreen.toBlob(function (blob) {
+            var name = file.name.replace(/\.[^.]+$/, "") + "_logo" + ext;
+            offscreen.width = 0;
+            offscreen.height = 0;
+            URL.revokeObjectURL(img.src);
+            processed = processed + 1;
+            setBatchProgress(Math.round((processed / total) * 100));
+            resolve({ name: name, blob: blob });
+          }, mime, quality);
+        };
+        img.src = URL.createObjectURL(file);
+      });
+    }
+
+    function processChunk(files) {
+      return new Promise(function (resolveChunk) {
+        var results = [];
+        var queue = files.slice();
+        var active = 0;
+
+        function next() {
+          while (active < concurrency && queue.length > 0) {
+            active = active + 1;
+            var file = queue.shift();
+            processOne(file).then(function (result) {
+              results.push(result);
+              active = active - 1;
+              if (queue.length > 0) {
+                next();
+              } else if (active === 0) {
+                resolveChunk(results);
+              }
+            });
+          }
+        }
+
+        next();
+      });
+    }
+
+    var chunks = [];
+    for (var i = 0; i < batchFiles.length; i += chunkSize) {
+      chunks.push(batchFiles.slice(i, i + chunkSize));
+    }
+
+    var chunkIndex = 0;
+
+    function processNextChunk() {
+      if (chunkIndex >= chunks.length) {
+        setBatchProcessing(false);
+        setBatchProgress(0);
+        return;
+      }
+
+      var currentChunk = chunks[chunkIndex];
+      var partLabel = chunks.length > 1 ? "_part" + (chunkIndex + 1) : "";
+
+      processChunk(currentChunk).then(function (results) {
+        var zip = new JSZip();
+        results.forEach(function (r) {
+          zip.file(r.name, r.blob, { compression: "STORE" });
+        });
+
+        zip.generateAsync({ type: "blob" }).then(function (zipBlob) {
+          var link = document.createElement("a");
+          link.href = URL.createObjectURL(zipBlob);
+          link.download = "logo-stamped" + partLabel + "-" + Date.now() + ".zip";
+          link.click();
+
+          URL.revokeObjectURL(link.href);
+          results.forEach(function (r) { r.blob = null; });
+          results = null;
+          zip = null;
+
+          chunkIndex = chunkIndex + 1;
+          setTimeout(processNextChunk, 500);
+        });
+      });
+    }
+
+    processNextChunk();
   }
 
   function handleBaseFile(file) {
