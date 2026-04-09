@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import JSZip from "jszip";
 
 var SNAP_POSITIONS = [
   { label: "Top Left", key: "tl" },
@@ -135,6 +136,13 @@ export default function LogoStamper() {
   var [logoPos, setLogoPos] = useState({ x: 0, y: 0 });
   var [dragging, setDragging] = useState(false);
   var [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+
+  var [history, setHistory] = useState([]);
+  var [batchMode, setBatchMode] = useState(false);
+  var [batchFiles, setBatchFiles] = useState([]);
+  var [batchPreviews, setBatchPreviews] = useState([]);
+  var [batchProcessing, setBatchProcessing] = useState(false);
+  var [batchProgress, setBatchProgress] = useState(0);
   useEffect(function () {
     fetch(import.meta.env.BASE_URL + 'logos/manifest.json')
       .then(function (r) { return r.json() })
@@ -161,6 +169,118 @@ export default function LogoStamper() {
   var previewRef = useRef(null);
   var baseImgRef = useRef(null);
   var logoImgRef = useRef(null);
+  function pushHistory() {
+    setHistory(function (prev) {
+      var snapshot = { x: logoPos.x, y: logoPos.y, scale: scale, opacity: opacity, padding: padding, snap: snap };
+      var next = prev.concat([snapshot]);
+      if (next.length > 30) next = next.slice(next.length - 30);
+      return next;
+    });
+  }
+
+  function handleUndo() {
+    if (history.length === 0) return;
+    var prev = history[history.length - 1];
+    setHistory(function (h) { return h.slice(0, h.length - 1) });
+    setScale(prev.scale);
+    setOpacity(prev.opacity);
+    setPadding(prev.padding);
+    setSnap(prev.snap);
+    setLogoPos({ x: prev.x, y: prev.y });
+  }
+
+  function handleBatchFiles(files) {
+    var arr = Array.from(files).filter(function (f) { return f.type.startsWith("image/") });
+    if (arr.length === 0) return;
+    setBatchFiles(arr);
+    setBatchPreviews(arr.map(function (f) { return URL.createObjectURL(f) }));
+    // Load the first image as the base for positioning
+    handleBaseFile(arr[0]);
+  }
+
+  function handleBatchExport() {
+    if (!logoImgRef.current || batchFiles.length === 0) return;
+    setBatchProcessing(true);
+    setBatchProgress(0);
+
+    var zip = new JSZip();
+    var logo = getLogoDisplaySize();
+    var processed = 0;
+    var total = batchFiles.length;
+    var mime = format === "png" ? "image/png" : "image/jpeg";
+    var quality = format === "jpeg" ? jpegQuality / 100 : undefined;
+    var ext = format === "png" ? ".png" : ".jpg";
+
+    function processNext(index) {
+      if (index >= total) {
+        zip.generateAsync({ type: "blob" }).then(function (blob) {
+          var link = document.createElement("a");
+          link.href = URL.createObjectURL(blob);
+          link.download = "logo-stamped-" + Date.now() + ".zip";
+          link.click();
+          URL.revokeObjectURL(link.href);
+          setBatchProcessing(false);
+          setBatchProgress(0);
+        });
+        return;
+      }
+
+      var file = batchFiles[index];
+      var img = new Image();
+      img.onload = function () {
+        var offscreen = document.createElement("canvas");
+        offscreen.width = img.naturalWidth;
+        offscreen.height = img.naturalHeight;
+        var ctx = offscreen.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+
+        // Recalculate logo size relative to THIS image's width
+        var targetW = img.naturalWidth * (scale / 100);
+        var ratio = targetW / logoImgRef.current.naturalWidth;
+        var lw = Math.round(targetW);
+        var lh = Math.round(logoImgRef.current.naturalHeight * ratio);
+
+        // Recalculate position for this image's dimensions
+        var pos = computeSnapForDims(img.naturalWidth, img.naturalHeight, lw, lh);
+
+        ctx.globalAlpha = opacity / 100;
+        ctx.drawImage(logoImgRef.current, pos.x, pos.y, lw, lh);
+        ctx.globalAlpha = 1;
+
+        offscreen.toBlob(function (blob) {
+          var name = file.name.replace(/\.[^.]+$/, "") + "_logo" + ext;
+          zip.file(name, blob);
+          processed = processed + 1;
+          setBatchProgress(Math.round((processed / total) * 100));
+          processNext(index + 1);
+        }, mime, quality);
+      };
+      img.src = URL.createObjectURL(file);
+    }
+
+    processNext(0);
+  }
+
+  function computeSnapForDims(imgW, imgH, logoW, logoH) {
+    var pad = padding;
+    var cx = (imgW - logoW) / 2;
+    var cy = (imgH - logoH) / 2;
+    var right = imgW - logoW - pad;
+    var bottom = imgH - logoH - pad;
+    var s = snap || "br";
+    switch (s) {
+      case "tl": return { x: pad, y: pad };
+      case "tc": return { x: cx, y: pad };
+      case "tr": return { x: right, y: pad };
+      case "ml": return { x: pad, y: cy };
+      case "mc": return { x: cx, y: cy };
+      case "mr": return { x: right, y: cy };
+      case "bl": return { x: pad, y: bottom };
+      case "bc": return { x: cx, y: bottom };
+      case "br": return { x: right, y: bottom };
+      default: return { x: right, y: bottom };
+    }
+  }
 
   function handleBaseFile(file) {
     var url = URL.createObjectURL(file);
@@ -284,6 +404,7 @@ export default function LogoStamper() {
   }
 
   function handlePreviewMouseUp() {
+    if (dragging) pushHistory();
     setDragging(false);
   }
 
@@ -364,13 +485,40 @@ export default function LogoStamper() {
           <span style={{ fontWeight: 700, fontSize: 15, color: "#1a1a1a" }}>Logo Stamper</span>
           <span style={{ fontSize: 10, fontWeight: 600, color: "#6366f1", background: "#eef2ff", padding: "2px 7px", borderRadius: 4, marginLeft: 2 }}>SMO</span>
         </div>
-        {ready && (
-          <button onClick={handleReset} style={{
-            fontSize: 11, fontWeight: 600, color: "#ef4444", background: "none",
-            border: "1.5px solid #fecaca", borderRadius: 6, padding: "4px 12px",
-            cursor: "pointer",
-          }}>Reset All</button>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {/* Mode toggle */}
+          <div style={{
+            display: "flex", borderRadius: 6, overflow: "hidden",
+            border: "1.5px solid #e5e7eb",
+          }}>
+            <button onClick={function () { setBatchMode(false) }} style={{
+              fontSize: 11, fontWeight: 600, padding: "4px 12px", cursor: "pointer",
+              border: "none",
+              background: !batchMode ? "#4f46e5" : "#fff",
+              color: !batchMode ? "#fff" : "#6b7280",
+            }}>Single</button>
+            <button onClick={function () { setBatchMode(true) }} style={{
+              fontSize: 11, fontWeight: 600, padding: "4px 12px", cursor: "pointer",
+              border: "none",
+              background: batchMode ? "#4f46e5" : "#fff",
+              color: batchMode ? "#fff" : "#6b7280",
+            }}>Batch</button>
+          </div>
+          {ready && history.length > 0 && (
+            <button onClick={handleUndo} style={{
+              fontSize: 11, fontWeight: 600, color: "#6366f1", background: "#eef2ff",
+              border: "1.5px solid #c7d2fe", borderRadius: 6, padding: "4px 12px",
+              cursor: "pointer",
+            }}>Undo ({history.length})</button>
+          )}
+          {ready && (
+            <button onClick={handleReset} style={{
+              fontSize: 11, fontWeight: 600, color: "#ef4444", background: "none",
+              border: "1.5px solid #fecaca", borderRadius: 6, padding: "4px 12px",
+              cursor: "pointer",
+            }}>Reset All</button>
+          )}
+        </div>
       </div>
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
@@ -382,18 +530,68 @@ export default function LogoStamper() {
         }}>
           {/* Upload: Base Image */}
           <div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Base Image</div>
-            <DropZone
-              onFile={handleBaseFile}
-              accept="image/png,image/jpeg,image/webp"
-              label="Drop image here"
-              sublabel="PNG, JPEG, WebP"
-              active={!!baseImage}
-              preview={basePreview}
-            />
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+              {batchMode ? "Base Images" : "Base Image"}
+            </div>
+            {batchMode ? (
+              <>
+                <div
+                  onClick={function () {
+                    var inp = document.createElement("input");
+                    inp.type = "file";
+                    inp.accept = "image/png,image/jpeg,image/webp";
+                    inp.multiple = true;
+                    inp.onchange = function () { handleBatchFiles(inp.files) };
+                    inp.click();
+                  }}
+                  onDragOver={function (e) { e.preventDefault() }}
+                  onDrop={function (e) {
+                    e.preventDefault();
+                    handleBatchFiles(e.dataTransfer.files);
+                  }}
+                  style={{
+                    border: batchFiles.length > 0 ? "2px solid #a5b4fc" : "2px dashed #d1d5db",
+                    borderRadius: 12, padding: batchFiles.length > 0 ? 10 : 32,
+                    cursor: "pointer", background: "#fff", textAlign: "center",
+                  }}
+                >
+                  {batchFiles.length > 0 ? (
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#4338ca" }}>{batchFiles.length} images loaded</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 8, justifyContent: "center" }}>
+                        {batchPreviews.slice(0, 12).map(function (p, i) {
+                          return <img key={i} src={p} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4, border: "1px solid #e5e7eb" }} />;
+                        })}
+                        {batchFiles.length > 12 && (
+                          <div style={{ width: 40, height: 40, borderRadius: 4, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#9ca3af" }}>
+                            +{batchFiles.length - 12}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>Click to re-select</div>
+                    </div>
+                  ) : (
+                    <>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "#374151" }}>Drop multiple images</span>
+                      <br />
+                      <span style={{ fontSize: 11, color: "#9ca3af" }}>PNG, JPEG, WebP</span>
+                    </>
+                  )}
+                </div>
+              </>
+            ) : (
+              <DropZone
+                onFile={handleBaseFile}
+                accept="image/png,image/jpeg,image/webp"
+                label="Drop image here"
+                sublabel="PNG, JPEG, WebP"
+                active={!!baseImage}
+                preview={basePreview}
+              />
+            )}
             {baseDims && (
               <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 4, fontFamily: "'JetBrains Mono', monospace" }}>
-                {baseDims.w} × {baseDims.h}px
+                {batchMode ? "Preview: " : ""}{baseDims.w} × {baseDims.h}px
               </div>
             )}
           </div>
@@ -477,7 +675,7 @@ export default function LogoStamper() {
                 <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Quick Position</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                   {SNAP_POSITIONS.map(function (s) {
-                    return <SnapButton key={s.key} label={s.label} active={snap === s.key} onClick={function () { setSnap(s.key); }} />;
+                    return <SnapButton key={s.key} label={s.label} active={snap === s.key} onClick={function () { pushHistory(); setSnap(s.key); }} />;
                   })}
                 </div>
                 <div style={{ fontSize: 10, color: "#b0b0b0", marginTop: 5 }}>Or drag the logo on the canvas</div>
@@ -513,14 +711,37 @@ export default function LogoStamper() {
                 )}
               </div>
 
-              <button onClick={handleExport} style={{
-                width: "100%", padding: "10px 0", fontSize: 13, fontWeight: 700,
-                background: "linear-gradient(135deg, #6366f1, #4f46e5)", color: "#fff",
-                border: "none", borderRadius: 8, cursor: "pointer",
-                transition: "opacity 0.15s", marginTop: 4,
-              }}>
-                Download Image
-              </button>
+              {batchMode && batchFiles.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+                  <button
+                    onClick={handleBatchExport}
+                    disabled={batchProcessing}
+                    style={{
+                      width: "100%", padding: "10px 0", fontSize: 13, fontWeight: 700,
+                      background: batchProcessing ? "#a5b4fc" : "linear-gradient(135deg, #6366f1, #4f46e5)",
+                      color: "#fff", border: "none", borderRadius: 8,
+                      cursor: batchProcessing ? "not-allowed" : "pointer",
+                      transition: "opacity 0.15s",
+                    }}
+                  >
+                    {batchProcessing ? "Processing... " + batchProgress + "%" : "Stamp All & Download ZIP (" + batchFiles.length + ")"}
+                  </button>
+                  {batchProcessing && (
+                    <div style={{ height: 4, borderRadius: 2, background: "#e5e7eb", overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: batchProgress + "%", background: "#6366f1", transition: "width 0.2s" }} />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <button onClick={handleExport} style={{
+                  width: "100%", padding: "10px 0", fontSize: 13, fontWeight: 700,
+                  background: "linear-gradient(135deg, #6366f1, #4f46e5)", color: "#fff",
+                  border: "none", borderRadius: 8, cursor: "pointer",
+                  transition: "opacity 0.15s", marginTop: 4,
+                }}>
+                  Download Image
+                </button>
+              )}
             </>
           )}
         </div>
